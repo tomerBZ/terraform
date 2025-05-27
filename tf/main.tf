@@ -43,6 +43,7 @@ resource "aws_vpc" "main" {
   tags = {
     Name        = "${var.environment}-vpc"
     Environment = var.environment
+    yor_trace   = "c0f16cf6-543c-43f0-a629-308d2994a4bc"
   }
 }
 
@@ -56,6 +57,7 @@ resource "aws_subnet" "public" {
   tags = {
     Name        = "${var.environment}-public-subnet"
     Environment = var.environment
+    yor_trace   = "1c97155f-18e1-4d7b-909d-b41251b450f9"
   }
 }
 
@@ -89,6 +91,7 @@ resource "aws_security_group" "web" {
   tags = {
     Name        = "${var.environment}-web-sg"
     Environment = var.environment
+    yor_trace   = "2d2ae835-c5e3-4348-aec0-85ce3f90558c"
   }
 }
 
@@ -99,6 +102,7 @@ resource "aws_s3_bucket" "data" {
   tags = {
     Name        = "${var.environment}-data-bucket"
     Environment = var.environment
+    yor_trace   = "4c97e8cd-a348-49f0-b2bc-b78321194bd5"
   }
 }
 
@@ -125,6 +129,7 @@ resource "aws_instance" "web_server" {
   tags = {
     Name        = "${var.environment}-web-server"
     Environment = var.environment
+    yor_trace   = "82f039c1-373e-48c2-82fa-4c149e0e1666"
   }
 }
 
