@@ -34,6 +34,18 @@ variable "vpc_cidr" {
   default     = "10.0.0.0/16"
 }
 
+variable "subnet_count" {
+  description = "Number of subnets to create"
+  type        = number
+  default     = 3
+}
+
+variable "instance_count" {
+  description = "Number of EC2 instances to create"
+  type        = number
+  default     = 2
+}
+
 // Resource 1: VPC
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
@@ -43,19 +55,22 @@ resource "aws_vpc" "main" {
   tags = {
     Name        = "${var.environment}-vpc"
     Environment = var.environment
+    yor_trace   = "254ac4ca-55d8-4156-8c7f-cd4c0bdcf556"
   }
 }
 
-// Resource 2: Subnet
+// Resource 2: Multiple Subnets using count
 resource "aws_subnet" "public" {
+  count                   = var.subnet_count
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.1.0/24"
-  availability_zone       = "${var.aws_region}a"
+  cidr_block              = "10.0.${count.index + 1}.0/24"
+  availability_zone       = "${var.aws_region}${["a", "b", "c"][count.index % 3]}"
   map_public_ip_on_launch = true
 
   tags = {
-    Name        = "${var.environment}-public-subnet"
+    Name        = "${var.environment}-public-subnet-${count.index + 1}"
     Environment = var.environment
+    yor_trace   = "48524c5c-c8a9-4b27-8b5e-dbcc5c8d3a02"
   }
 }
 
@@ -89,6 +104,7 @@ resource "aws_security_group" "web" {
   tags = {
     Name        = "${var.environment}-web-sg"
     Environment = var.environment
+    yor_trace   = "7fcaaeba-53fc-4990-b0d1-ccb97b7b4fb8"
   }
 }
 
@@ -99,6 +115,7 @@ resource "aws_s3_bucket" "data" {
   tags = {
     Name        = "${var.environment}-data-bucket"
     Environment = var.environment
+    yor_trace   = "4c936ee0-c927-4d0a-8a09-f2084a46d45e"
   }
 }
 
@@ -106,11 +123,12 @@ resource "random_id" "bucket_suffix" {
   byte_length = 4
 }
 
-// Resource 5: EC2 Instance
+// Resource 5: Multiple EC2 Instances using count
 resource "aws_instance" "web_server" {
+  count                  = var.instance_count
   ami                    = "ami-0c55b159cbfafe1f0" // Amazon Linux 2 (update as needed)
   instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.public.id
+  subnet_id              = aws_subnet.public[count.index % var.subnet_count].id
   vpc_security_group_ids = [aws_security_group.web.id]
 
   user_data = <<-EOF
@@ -119,13 +137,40 @@ resource "aws_instance" "web_server" {
               yum install -y httpd
               systemctl start httpd
               systemctl enable httpd
-              echo "<h1>Hello from Terraform</h1>" > /var/www/html/index.html
+              echo "<h1>Hello from Terraform - Server ${count.index + 1}</h1>" > /var/www/html/index.html
               EOF
 
   tags = {
-    Name        = "${var.environment}-web-server"
+    Name        = "${var.environment}-web-server-${count.index + 1}"
     Environment = var.environment
+    yor_trace   = "17158bcf-5e27-479e-a1f6-eda72ea9afc7"
   }
+}
+
+// Example of using for_each with a map
+variable "additional_tags" {
+  description = "Additional tags for resources"
+  type        = map(string)
+  default = {
+    Project     = "TerraformDemo"
+    Owner       = "DevOps"
+    CostCenter  = "IT-123"
+    Compliance  = "SOC2"
+  }
+}
+
+// Resource 6: Route53 records using for_each
+resource "aws_route53_record" "web_servers" {
+  for_each = {
+    for idx, instance in aws_instance.web_server : 
+    "server-${idx}" => instance.public_ip
+  }
+  
+  zone_id = "DUMMY_ZONE_ID" // Replace with actual zone ID
+  name    = "${each.key}.example.com"
+  type    = "A"
+  ttl     = 300
+  records = [each.value]
 }
 
 // Outputs
@@ -133,10 +178,18 @@ output "vpc_id" {
   value = aws_vpc.main.id
 }
 
-output "web_server_public_ip" {
-  value = aws_instance.web_server.public_ip
+output "web_server_public_ips" {
+  value = [for instance in aws_instance.web_server : instance.public_ip]
+}
+
+output "subnet_ids" {
+  value = aws_subnet.public[*].id
 }
 
 output "s3_bucket_name" {
   value = aws_s3_bucket.data.bucket
+}
+
+output "route53_records" {
+  value = [for record in aws_route53_record.web_servers : record.name]
 }
