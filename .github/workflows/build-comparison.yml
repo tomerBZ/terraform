@@ -1,0 +1,198 @@
+name: Image Builders Comparison
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_packer:
+        description: 'Run Packer build'
+        type: boolean
+        default: true
+      run_ec2_imagebuilder:
+        description: 'Run EC2 Image Builder'
+        type: boolean
+        default: true
+
+env:
+  AWS_REGION: us-west-2
+
+jobs:
+  packer-build:
+    name: HashiCorp Packer Build
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.run_packer == 'true' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: "1.9.4"
+
+      - name: Create Packer template
+        run: |
+          cat > packer-template.pkr.hcl << 'EOF'
+          packer {
+            required_plugins {
+              amazon = {
+                source  = "github.com/hashicorp/amazon"
+                version = "~> 1"
+              }
+            }
+          }
+
+          source "amazon-ebs" "ubuntu" {
+            ami_name      = "packer-demo-{{timestamp}}"
+            instance_type = "t3.micro"
+            region        = "us-west-2"
+            
+            source_ami_filter {
+              filters = {
+                name                = "ubuntu/images/hvm-ssd/ubuntu-22.04-amd64-server-*"
+                root-device-type    = "ebs"
+                virtualization-type = "hvm"
+              }
+              most_recent = true
+              owners      = ["099720109477"]
+            }
+            
+            ssh_username = "ubuntu"
+            
+            tags = {
+              Name = "packer-demo-{{timestamp}}"
+              Tool = "HashiCorp-Packer"
+            }
+          }
+
+          build {
+            sources = ["source.amazon-ebs.ubuntu"]
+            
+            provisioner "shell" {
+              inline = [
+                "sudo apt-get update",
+                "sudo apt-get install -y nginx",
+                "sudo systemctl enable nginx",
+                "echo '<h1>Built with HashiCorp Packer</h1>' | sudo tee /var/www/html/index.html"
+              ]
+            }
+          }
+          EOF
+
+      - name: Initialize and build with Packer
+        run: |
+          echo "🚀 Starting Packer build..."
+          packer init packer-template.pkr.hcl
+          packer validate packer-template.pkr.hcl
+          packer build packer-template.pkr.hcl | tee packer-build.log
+          echo "✅ Packer build completed!"
+
+      - name: Upload Packer logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: packer-build-logs
+          path: packer-build.log
+
+  ec2-imagebuilder-build:
+    name: AWS EC2 Image Builder Build
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.run_ec2_imagebuilder == 'true' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run EC2 Image Builder pipeline
+        run: |
+          echo "🚀 Starting EC2 Image Builder..."
+          
+          # Create component
+          cat > component.yml << 'EOF'
+          name: InstallNginx
+          description: Install Nginx web server
+          schemaVersion: 1.0
+          phases:
+            - name: build
+              steps:
+                - name: UpdateOS
+                  action: UpdateOS
+                - name: InstallNginx
+                  action: ExecuteBash
+                  inputs:
+                    commands:
+                      - apt-get update
+                      - apt-get install -y nginx
+                      - systemctl enable nginx
+                      - echo '<h1>Built with EC2 Image Builder</h1>' > /var/www/html/index.html
+          EOF
+
+          COMPONENT_ARN=$(aws imagebuilder create-component \
+            --name "nginx-component-$(date +%s)" \
+            --semantic-version "1.0.0" \
+            --description "Install Nginx" \
+            --platform Linux \
+            --data file://component.yml \
+            --query 'componentBuildVersionArn' \
+            --output text)
+          
+          echo "✅ Component created: $COMPONENT_ARN"
+          
+          # Get base AMI and create recipe
+          BASE_AMI=$(aws ec2 describe-images \
+            --owners 099720109477 \
+            --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-22.04-amd64-server-*" \
+            --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
+            --output text)
+          
+          RECIPE_ARN=$(aws imagebuilder create-image-recipe \
+            --name "nginx-recipe-$(date +%s)" \
+            --semantic-version "1.0.0" \
+            --description "Ubuntu with Nginx" \
+            --parent-image "$BASE_AMI" \
+            --components componentArn=$COMPONENT_ARN \
+            --query 'imageRecipeArn' \
+            --output text)
+          
+          echo "✅ Recipe created: $RECIPE_ARN"
+          
+          # Create infrastructure config
+          INFRA_ARN=$(aws imagebuilder create-infrastructure-configuration \
+            --name "basic-infra-$(date +%s)" \
+            --instance-types t3.micro \
+            --query 'infrastructureConfigurationArn' \
+            --output text)
+          
+          echo "✅ Infrastructure config created: $INFRA_ARN"
+          
+          # Start build
+          IMAGE_ARN=$(aws imagebuilder create-image \
+            --image-recipe-arn "$RECIPE_ARN" \
+            --infrastructure-configuration-arn "$INFRA_ARN" \
+            --query 'imageBuildVersionArn' \
+            --output text)
+          
+          echo "✅ Image build started: $IMAGE_ARN"
+          echo "Build ARNs:" > ec2-imagebuilder-build.log
+          echo "Image: $IMAGE_ARN" >> ec2-imagebuilder-build.log
+          echo "Recipe: $RECIPE_ARN" >> ec2-imagebuilder-build.log
+          echo "Component: $COMPONENT_ARN" >> ec2-imagebuilder-build.log
+
+      - name: Upload EC2 Image Builder logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ec2-imagebuilder-logs
+          path: ec2-imagebuilder-build.log
